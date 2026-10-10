@@ -1,6 +1,6 @@
 ---
 name: Touch Kiosk
-version: "1.1.0"
+version: "1.1.1"
 slug: touchkiosk
 description: >-
   Zeigt ein Home-Assistant-Dashboard im Vollbild auf einem direkt
