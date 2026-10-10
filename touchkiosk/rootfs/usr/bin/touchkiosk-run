@@ -25,6 +25,7 @@ SELECTED_CARD=""
 SELECTED_CONNECTOR=""
 ROTATION_APPLIED=false
 CHROMIUM_ARGS=()
+BROWSER_LANGUAGE="de_DE:de"
 
 # ------------------------------------------------------------------------------
 # Optionen
@@ -50,6 +51,8 @@ read_options() {
     ZOOM=$(bashio::config 'zoom' '100')
     HIDE_CURSOR=$(bashio::config 'hide_cursor' 'true')
     VIDEO_DRIVER=$(bashio::config 'video_driver' 'auto')
+    KEYBOARD=$(bashio::config 'onscreen_keyboard' 'true')
+    KEYBOARD_LAYOUT=$(bashio::config 'keyboard_layout' 'de')
     API_PORT=$(bashio::config 'api_port' '8099')
     DEBUG=$(bashio::config 'debug' 'false')
 }
@@ -417,13 +420,15 @@ wait_for_home_assistant() {
     bashio::log.warning "Home Assistant nicht erreichbar – Browser startet trotzdem."
 }
 
-build_autologin_extension() {
+build_extension() {
     local scheme rest hostport host port origin config
+    local scripts=()
 
     rm -rf "${EXT_DIR}"
-    if [[ -z "${ACCESS_TOKEN}" ]]; then
+    if [[ -z "${ACCESS_TOKEN}" && "${KEYBOARD}" != "true" ]]; then
         return 1
     fi
+    mkdir -p "${EXT_DIR}"
 
     scheme=${HA_URL%%://*}
     rest=${HA_URL#*://}
@@ -439,26 +444,38 @@ build_autologin_extension() {
     fi
     origin="${scheme}://${host}${port:+:${port}}"
 
-    mkdir -p "${EXT_DIR}"
-    jq -n --arg match "${scheme}://${host}/*" '{
+    if [[ -n "${ACCESS_TOKEN}" ]]; then
+        config=$(jq -cn --arg origin "${origin}" --arg token "${ACCESS_TOKEN}" \
+            '{origin: $origin, token: $token}')
+        {
+            cat "${SHARE_DIR}/autologin.js"
+            printf '\ntouchKioskAutoLogin(%s);\n' "${config}"
+        } > "${EXT_DIR}/autologin.js"
+        scripts+=(autologin.js)
+    fi
+
+    if [[ "${KEYBOARD}" == "true" ]]; then
+        config=$(jq -cn --arg layout "${KEYBOARD_LAYOUT}" '{layout: $layout}')
+        {
+            cat "${SHARE_DIR}/keyboard.js"
+            printf '\ntouchKioskKeyboard(%s);\n' "${config}"
+        } > "${EXT_DIR}/keyboard.js"
+        scripts+=(keyboard.js)
+    fi
+
+    jq -n --arg match "${scheme}://${host}/*" \
+        --argjson js "$(printf '%s\n' "${scripts[@]}" | jq -R . | jq -sc .)" '{
         manifest_version: 3,
-        name: "Touch Kiosk Auto-Login",
-        version: "1.0",
-        description: "Meldet das Kiosk-Dashboard automatisch an.",
+        name: "Touch Kiosk",
+        version: "1.1",
+        description: "Auto-Login und Bildschirmtastatur für den Touch Kiosk.",
         content_scripts: [{
             matches: [$match],
-            js: ["autologin.js"],
+            js: $js,
             run_at: "document_start",
             all_frames: false
         }]
     }' > "${EXT_DIR}/manifest.json"
-
-    config=$(jq -cn --arg origin "${origin}" --arg token "${ACCESS_TOKEN}" \
-        '{origin: $origin, token: $token}')
-    {
-        cat "${SHARE_DIR}/autologin.js"
-        printf '\ntouchKioskAutoLogin(%s);\n' "${config}"
-    } > "${EXT_DIR}/autologin.js"
 }
 
 build_chromium_args() {
@@ -495,15 +512,29 @@ build_chromium_args() {
         --password-store=basic
         --autoplay-policy=no-user-gesture-required
         --disable-features=Translate,TranslateUI,DisableLoadExtensionCommandLineSwitch
-        --lang=de-DE
     )
 
-    if build_autologin_extension; then
+    # Sprache der Oberfläche: Chromium unter Linux richtet sich nach LANGUAGE
+    # shellcheck disable=SC2054 # Kommas gehören zu den Chromium-Parametern
+    if [[ "${KEYBOARD_LAYOUT}" == "en" ]]; then
+        BROWSER_LANGUAGE="en_US:en"
+        CHROMIUM_ARGS+=(--lang=en-US --accept-lang=en-US,en)
+    else
+        BROWSER_LANGUAGE="de_DE:de"
+        CHROMIUM_ARGS+=(--lang=de-DE --accept-lang=de-DE,de,en)
+    fi
+
+    if build_extension; then
         CHROMIUM_ARGS+=(--load-extension="${EXT_DIR}")
+    fi
+    if [[ -n "${ACCESS_TOKEN}" ]]; then
         bashio::log.info "Automatische Anmeldung mit Zugriffstoken aktiv."
     else
         bashio::log.info "Kein Zugriffstoken gesetzt – beim ersten Start einmal am Monitor anmelden"
         bashio::log.info "('Angemeldet bleiben' aktivieren); die Anmeldung wird gespeichert."
+    fi
+    if [[ "${KEYBOARD}" == "true" ]]; then
+        bashio::log.info "Bildschirmtastatur aktiv (Layout: ${KEYBOARD_LAYOUT})."
     fi
     bashio::log.info "Bildschirm: ${width}x${height}, Zoom ${ZOOM} %."
 }
@@ -529,9 +560,9 @@ run_browser() {
         prepare_profile
         bashio::log.info "Starte Chromium: ${url}"
         if [[ "${DEBUG}" == "true" ]]; then
-            chromium "${CHROMIUM_ARGS[@]}" "${url}" &
+            LANGUAGE="${BROWSER_LANGUAGE}" chromium "${CHROMIUM_ARGS[@]}" "${url}" &
         else
-            chromium "${CHROMIUM_ARGS[@]}" "${url}" >>"${CHROMIUM_LOG}" 2>&1 &
+            LANGUAGE="${BROWSER_LANGUAGE}" chromium "${CHROMIUM_ARGS[@]}" "${url}" >>"${CHROMIUM_LOG}" 2>&1 &
         fi
         CHROMIUM_PID=$!
         wait "${CHROMIUM_PID}" || true

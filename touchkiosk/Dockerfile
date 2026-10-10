@@ -36,6 +36,7 @@ RUN sed -i 's/\r$//' \
         /usr/bin/touchkiosk-run \
         /usr/share/touchkiosk/screen_manager.py \
         /usr/share/touchkiosk/autologin.js \
+        /usr/share/touchkiosk/keyboard.js \
     && chmod a+x /usr/bin/touchkiosk-run /usr/share/touchkiosk/screen_manager.py
 
 CMD ["/usr/bin/touchkiosk-run"]

@@ -28,9 +28,23 @@ automatischem Standby.
    - Den Token in der App-Konfiguration bei **Langlebiges Zugriffstoken**
      eintragen.
 
-   Ohne Token zeigt der Monitor die normale Anmeldeseite. Dann einmal mit
-   angeschlossener Tastatur anmelden und „Angemeldet bleiben“ aktivieren – die
+   Ohne Token zeigt der Monitor die normale Anmeldeseite. Dann einmal über die
+   Bildschirmtastatur anmelden und „Angemeldet bleiben“ aktivieren – die
    Anmeldung bleibt gespeichert.
+
+## Bildschirmtastatur
+
+- Erscheint automatisch, sobald ein Textfeld angetippt wird (Anmeldeseite,
+  Suche, Dialoge, Text-Helfer …), und verschwindet, wenn das Feld verlassen wird.
+- Liegt unten; würde sie das Feld verdecken, wandert sie nach oben.
+- `⇧` = ein Großbuchstabe, zweimal schnell = Feststelltaste.
+- `?123` / `ABC` wechselt zu Sonderzeichen und zurück, `←` `→` bewegen den Cursor.
+- `⌫` gedrückt halten löscht fortlaufend.
+- `↵` sendet ab (z. B. Anmelden) bzw. übernimmt den Wert eines Textfeldes.
+- `⌨ ▾` blendet die Tastatur aus – das Feld erneut antippen holt sie zurück.
+- Abschalten mit `onscreen_keyboard: false`, Layout mit `keyboard_layout`
+  (`de` = QWERTZ mit Umlauten, `en` = QWERTY). Das Layout legt auch die Sprache
+  des Browsers fest.
 
 ## Optionen
 
@@ -44,6 +58,8 @@ automatischem Standby.
 | `rotation` | `normal` | `left`, `right`, `inverted` – dreht Bild **und** Touch |
 | `zoom` | `100` | Vergrößerung in Prozent |
 | `hide_cursor` | `true` | Mauszeiger ausblenden |
+| `onscreen_keyboard` | `true` | Bildschirmtastatur bei Textfeldern |
+| `keyboard_layout` | `de` | `de` (QWERTZ) oder `en` (QWERTY), auch Browsersprache |
 | `video_driver` | `auto` | `modesetting`, bei Problemen automatisch `fbdev` |
 | `api_port` | `8099` | Lokale Steuerung, `0` = aus |
 | `debug` | `false` | Ausführliches Log |
@@ -114,4 +130,7 @@ actions:
 - **Monitor geht nicht in Standby:** Manche Monitore zeigen bei fehlendem
   Signal nur „Kein Signal“ und bleiben an – dann im Menü des Monitors den
   Energiesparmodus / Auto-Standby einschalten.
+- **Anmeldeseite lädt beim allerersten Start einmal neu:** Das macht Home
+  Assistant selbst (Service Worker wird eingerichtet). Kurz warten, bis die
+  Seite neu geladen ist, dann Benutzername und Passwort eingeben.
 - Mit `debug: true` landen alle Meldungen von Xorg und Chromium im Log.

@@ -6,6 +6,7 @@ Touch-Monitor (Raspberry Pi 4 und x86).
 - Chromium im Kiosk-Modus, Touch-Bedienung
 - Standby nach 3 Minuten ohne Berührung (einstellbar)
 - Aufweck-Berührung löst nichts im Dashboard aus
+- Bildschirmtastatur, sobald ein Textfeld angetippt wird (auch zum Anmelden)
 - Automatische Anmeldung per Zugriffstoken
 - Bildschirm aus Home Assistant ein-/ausschalten (z. B. bei Bewegung)
 

@@ -29,6 +29,12 @@ configuration:
   hide_cursor:
     name: Hide mouse cursor
     description: Hides the mouse cursor completely (touch-only use).
+  onscreen_keyboard:
+    name: On-screen keyboard
+    description: Shows a keyboard whenever a text field is tapped (e.g. on the login page).
+  keyboard_layout:
+    name: Keyboard layout
+    description: de = QWERTZ with umlauts, en = QWERTY. Also sets the browser language.
   video_driver:
     name: Video driver
     description: auto tries modesetting and falls back to fbdev.

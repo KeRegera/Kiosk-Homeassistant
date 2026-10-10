@@ -35,6 +35,16 @@ configuration:
   hide_cursor:
     name: Mauszeiger ausblenden
     description: Blendet den Mauszeiger komplett aus (für reine Touch-Bedienung).
+  onscreen_keyboard:
+    name: Bildschirmtastatur
+    description: >-
+      Blendet eine Tastatur ein, sobald ein Textfeld angetippt wird
+      (z. B. Benutzername und Passwort auf der Anmeldeseite).
+  keyboard_layout:
+    name: Tastaturlayout
+    description: >-
+      de = QWERTZ mit Umlauten, en = QWERTY. Legt auch die Sprache des
+      Browsers fest.
   video_driver:
     name: Grafiktreiber
     description: >-

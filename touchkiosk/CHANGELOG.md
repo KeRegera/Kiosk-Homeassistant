@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0
+
+- Bildschirmtastatur (QWERTZ mit Umlauten oder QWERTY): erscheint automatisch,
+  sobald ein Textfeld angetippt wird – auch auf der Anmeldeseite und in Dialogen
+- Taste „⌨ ▾“ blendet die Tastatur aus, erneutes Antippen des Feldes holt sie zurück
+- Enter sendet Formulare ab bzw. übernimmt Werte (z. B. Text-Helfer)
+- Browsersprache folgt dem Tastaturlayout (Deutsch bzw. Englisch)
+
 ## 1.0.0
 
 - Erste Version: Dashboard im Vollbild auf einem Touch-Monitor (Chromium-Kiosk)
