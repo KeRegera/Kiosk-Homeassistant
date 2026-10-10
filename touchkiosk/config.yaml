@@ -1,0 +1,92 @@
+---
+name: Touch Kiosk
+version: "1.0.0"
+slug: touchkiosk
+description: >-
+  Zeigt ein Home-Assistant-Dashboard im Vollbild auf einem direkt
+  angeschlossenen Touch-Monitor – mit Standby nach Inaktivität.
+url: https://github.com/DEIN-GITHUB-NAME/hassos-apps/tree/main/touchkiosk
+
+arch:
+  - aarch64
+  - amd64
+
+startup: application
+boot: auto
+init: false
+host_network: true
+
+# SYS_ADMIN wird benötigt, damit X den Bildschirm (DRM-Master) übernehmen kann
+privileged:
+  - SYS_ADMIN
+
+ulimits:
+  nofile:
+    soft: 65536
+    hard: 65536
+
+# Nicht vorhandene Geräte werden vom Supervisor übersprungen.
+devices:
+  - /dev/dri/card0
+  - /dev/dri/card1
+  - /dev/dri/card2
+  - /dev/dri/renderD128
+  - /dev/dri/renderD129
+  - /dev/fb0
+  - /dev/fb1
+  - /dev/input/event0
+  - /dev/input/event1
+  - /dev/input/event2
+  - /dev/input/event3
+  - /dev/input/event4
+  - /dev/input/event5
+  - /dev/input/event6
+  - /dev/input/event7
+  - /dev/input/event8
+  - /dev/input/event9
+  - /dev/input/event10
+  - /dev/input/event11
+  - /dev/input/event12
+  - /dev/input/event13
+  - /dev/input/event14
+  - /dev/input/event15
+  - /dev/input/event16
+  - /dev/input/event17
+  - /dev/input/event18
+  - /dev/input/event19
+  - /dev/input/event20
+  - /dev/input/event21
+  - /dev/input/event22
+  - /dev/input/event23
+  - /dev/input/event24
+  - /dev/input/event25
+  - /dev/input/event26
+  - /dev/input/event27
+  - /dev/input/event28
+  - /dev/input/event29
+  - /dev/input/event30
+  - /dev/input/event31
+
+options:
+  ha_url: "http://localhost:8123"
+  screen_timeout: 180
+  swallow_wake_touch: true
+  rotation: normal
+  zoom: 100
+  hide_cursor: true
+  video_driver: auto
+  api_port: 8099
+  debug: false
+
+schema:
+  ha_url: url
+  dashboard: str?
+  access_token: password?
+  screen_timeout: int(0,86400)
+  swallow_wake_touch: bool
+  rotation: list(normal|left|right|inverted)
+  zoom: int(25,400)
+  hide_cursor: bool
+  video_driver: list(auto|modesetting|fbdev)
+  api_port: int(0,65535)
+  debug: bool

@@ -1,0 +1,575 @@
+#!/usr/bin/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Touch Kiosk für Home Assistant OS
+#
+# 1. Startet einen X-Server direkt auf dem angeschlossenen Monitor (kein Desktop)
+# 2. Startet den Bildschirm-Manager (Standby nach Inaktivität, Touch-Wecken, API)
+# 3. Startet Chromium im Kiosk-Modus mit dem gewünschten Dashboard
+# ==============================================================================
+
+export DISPLAY=:0
+
+readonly XORG_CONF=/etc/X11/xorg.conf
+readonly XORG_LOG=/tmp/Xorg.0.log
+readonly SHARE_DIR=/usr/share/touchkiosk
+readonly EXT_DIR=/tmp/touchkiosk-autologin
+readonly PROFILE_DIR=/data/chromium
+readonly CHROMIUM_LOG=/tmp/chromium.log
+
+TTY0_REMOVED=false
+XORG_PID=""
+SCREEN_LOOP_PID=""
+CHROMIUM_PID=""
+SELECTED_CARD=""
+SELECTED_CONNECTOR=""
+ROTATION_APPLIED=false
+CHROMIUM_ARGS=()
+
+# ------------------------------------------------------------------------------
+# Optionen
+# ------------------------------------------------------------------------------
+read_options() {
+    HA_URL=$(bashio::config 'ha_url')
+    HA_URL=${HA_URL%/}
+
+    DASHBOARD=""
+    if bashio::config.has_value 'dashboard'; then
+        DASHBOARD=$(bashio::config 'dashboard')
+    fi
+    DASHBOARD=${DASHBOARD#/}
+
+    ACCESS_TOKEN=""
+    if bashio::config.has_value 'access_token'; then
+        ACCESS_TOKEN=$(bashio::config 'access_token')
+    fi
+
+    SCREEN_TIMEOUT=$(bashio::config 'screen_timeout' '180')
+    SWALLOW_WAKE_TOUCH=$(bashio::config 'swallow_wake_touch' 'true')
+    ROTATION=$(bashio::config 'rotation' 'normal')
+    ZOOM=$(bashio::config 'zoom' '100')
+    HIDE_CURSOR=$(bashio::config 'hide_cursor' 'true')
+    VIDEO_DRIVER=$(bashio::config 'video_driver' 'auto')
+    API_PORT=$(bashio::config 'api_port' '8099')
+    DEBUG=$(bashio::config 'debug' 'false')
+}
+
+# ------------------------------------------------------------------------------
+# Aufräumen
+# ------------------------------------------------------------------------------
+cleanup() {
+    local pid
+    bashio::log.info "Touch Kiosk wird beendet ..."
+    for pid in "${CHROMIUM_PID}" "${SCREEN_LOOP_PID}"; do
+        if [[ -n "${pid}" ]]; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    done
+    pkill -f screen_manager.py 2>/dev/null || true
+    if [[ -n "${XORG_PID}" ]]; then
+        kill "${XORG_PID}" 2>/dev/null || true
+    fi
+    restore_tty0
+}
+
+# ------------------------------------------------------------------------------
+# Virtuelles Terminal: Xorg darf im Container kein VT übernehmen. Ohne
+# /dev/tty0 startet X ohne VT – deshalb wird es kurz entfernt.
+# ------------------------------------------------------------------------------
+prepare_tty0() {
+    if [[ ! -e /dev/tty0 ]]; then
+        return 0
+    fi
+    if mount -o remount,rw /dev 2>/dev/null && rm -f /dev/tty0; then
+        TTY0_REMOVED=true
+        bashio::log.info "X wird ohne virtuelles Terminal gestartet."
+    else
+        bashio::log.warning "/dev/tty0 konnte nicht entfernt werden – X startet evtl. nicht."
+    fi
+}
+
+restore_tty0() {
+    if [[ "${TTY0_REMOVED}" == "true" && ! -e /dev/tty0 ]]; then
+        mknod -m 620 /dev/tty0 c 4 0 2>/dev/null || true
+    fi
+    TTY0_REMOVED=false
+}
+
+# ------------------------------------------------------------------------------
+# udev: libinput findet Touchscreens nur über die udev-Datenbank
+# ------------------------------------------------------------------------------
+start_udev() {
+    local dev devpath
+    if ! udevd --daemon >/dev/null 2>&1; then
+        bashio::log.warning "udevd konnte nicht gestartet werden – Touch evtl. ohne Funktion."
+        return 0
+    fi
+    udevadm trigger --action=add >/dev/null 2>&1 || true
+    udevadm settle --timeout=10 >/dev/null 2>&1 || true
+
+    # Im Container werden Eingabegeräte nicht immer für libinput markiert
+    for dev in /dev/input/event*; do
+        [[ -c "${dev}" ]] || continue
+        devpath=$(udevadm info --query=path --name="${dev}" 2>/dev/null) || continue
+        udevadm test "${devpath}" >/dev/null 2>&1 || true
+    done
+    udevadm settle --timeout=10 >/dev/null 2>&1 || true
+}
+
+log_input_devices() {
+    local sysdev name event
+    bashio::log.info "Eingabegeräte:"
+    for sysdev in /sys/class/input/event*; do
+        [[ -e "${sysdev}" ]] || continue
+        event=$(basename "${sysdev}")
+        name=$(cat "${sysdev}/device/name" 2>/dev/null || echo "?")
+        if [[ -c "/dev/input/${event}" ]]; then
+            bashio::log.info "  ${event}: ${name}"
+        else
+            bashio::log.warning "  ${event}: ${name} (nicht in der App verfügbar)"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Monitor finden (Pi 4: card1 = vc4 mit HDMI-A-1 / HDMI-A-2)
+# ------------------------------------------------------------------------------
+select_display() {
+    local status_path port status connector_dir
+
+    bashio::log.info "Bildschirmanschlüsse:"
+    for status_path in /sys/class/drm/card[0-9]*-*/status; do
+        [[ -e "${status_path}" ]] || continue
+        connector_dir=$(dirname "${status_path}")
+        port=$(basename "${connector_dir}")
+        status=$(cat "${status_path}" 2>/dev/null || echo "unbekannt")
+        bashio::log.info "  ${port}: ${status}"
+
+        if [[ -z "${SELECTED_CARD}" && "${status}" == "connected" ]]; then
+            SELECTED_CARD=${port%%-*}
+            SELECTED_CONNECTOR=${port#*-}
+            if [[ ! -s "${connector_dir}/modes" ]]; then
+                bashio::log.warning "${port} liefert keine Auflösungen (EDID fehlt?)."
+                bashio::log.warning "Tipp: in cmdline.txt 'video=${SELECTED_CONNECTOR}:1920x1080@60D' ergänzen."
+            fi
+        fi
+    done
+
+    if [[ -z "${SELECTED_CARD}" ]]; then
+        # Kein Monitor gemeldet -> erste Karte mit Bildschirmanschlüssen nehmen
+        for status_path in /sys/class/drm/card[0-9]*-*/status; do
+            [[ -e "${status_path}" ]] || continue
+            port=$(basename "$(dirname "${status_path}")")
+            SELECTED_CARD=${port%%-*}
+            break
+        done
+        if [[ -n "${SELECTED_CARD}" ]]; then
+            bashio::log.warning "Kein eingeschalteter Monitor erkannt – versuche es mit ${SELECTED_CARD}."
+        fi
+    fi
+
+    if [[ -n "${SELECTED_CARD}" && ! -c "/dev/dri/${SELECTED_CARD}" ]]; then
+        bashio::log.warning "/dev/dri/${SELECTED_CARD} ist in der App nicht verfügbar."
+    fi
+    if [[ -n "${SELECTED_CARD}" ]]; then
+        bashio::log.info "Verwende ${SELECTED_CARD}${SELECTED_CONNECTOR:+ (${SELECTED_CONNECTOR})}."
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# X-Server
+# ------------------------------------------------------------------------------
+write_xorg_conf() {
+    local driver=$1
+    local device_options
+
+    if [[ "${driver}" == "fbdev" ]]; then
+        device_options='    Driver      "fbdev"
+    Option      "fbdev" "/dev/fb0"'
+    else
+        # AccelMethod none: auf dem Pi 4 scheitert glamor sonst mit
+        # "AddScreen/ScreenInit failed". Chromium rendert ohnehin per CPU.
+        device_options="    Driver      \"modesetting\"
+    Option      \"kmsdev\" \"/dev/dri/${SELECTED_CARD:-card0}\"
+    Option      \"AccelMethod\" \"none\""
+    fi
+
+    mkdir -p "$(dirname "${XORG_CONF}")"
+    cat > "${XORG_CONF}" <<EOF
+# Automatisch erzeugt vom Touch Kiosk
+Section "ServerFlags"
+    Option "AutoAddGPU"   "false"
+    Option "AutoBindGPU"  "false"
+    Option "BlankTime"    "0"
+    Option "StandbyTime"  "0"
+    Option "SuspendTime"  "0"
+    Option "OffTime"      "0"
+    Option "DontVTSwitch" "true"
+    Option "DontZap"      "true"
+EndSection
+
+Section "Device"
+    Identifier  "Card0"
+${device_options}
+EndSection
+
+Section "Monitor"
+    Identifier  "Monitor0"
+    Option      "DPMS" "true"
+EndSection
+
+Section "Screen"
+    Identifier   "Screen0"
+    Device       "Card0"
+    Monitor      "Monitor0"
+    DefaultDepth 24
+EndSection
+
+Section "ServerLayout"
+    Identifier "Kiosk"
+    Screen     0 "Screen0" 0 0
+EndSection
+
+Section "InputClass"
+    Identifier      "touchkiosk touchscreen"
+    MatchIsTouchscreen "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver          "libinput"
+EndSection
+
+Section "InputClass"
+    Identifier      "touchkiosk pointer"
+    MatchIsPointer  "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver          "libinput"
+EndSection
+
+Section "InputClass"
+    Identifier      "touchkiosk keyboard"
+    MatchIsKeyboard "on"
+    MatchDevicePath "/dev/input/event*"
+    Driver          "libinput"
+EndSection
+EOF
+}
+
+start_xorg() {
+    local driver=$1
+    local i line
+    local args=(:0 -config "${XORG_CONF}" -logfile "${XORG_LOG}" -nolisten tcp -noreset)
+
+    if [[ "${driver}" == "fbdev" && ! -c /dev/fb0 ]]; then
+        bashio::log.warning "/dev/fb0 nicht vorhanden – fbdev-Treiber nicht möglich."
+        return 1
+    fi
+    if [[ "${HIDE_CURSOR}" == "true" ]]; then
+        args+=(-nocursor)
+    fi
+
+    write_xorg_conf "${driver}"
+    rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+
+    bashio::log.info "Starte X-Server (Treiber: ${driver}) ..."
+    Xorg "${args[@]}" >/tmp/xorg.out 2>&1 &
+    XORG_PID=$!
+
+    for ((i = 0; i < 30; i++)); do
+        if xset q >/dev/null 2>&1; then
+            bashio::log.info "X-Server läuft."
+            return 0
+        fi
+        if ! kill -0 "${XORG_PID}" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+
+    bashio::log.warning "X-Server mit Treiber '${driver}' fehlgeschlagen:"
+    while IFS= read -r line; do
+        bashio::log.warning "  ${line}"
+    done < <(grep -E '\(EE\) [^ ]' "${XORG_LOG}" 2>/dev/null | head -n 15 || true)
+
+    if grep -q "drmSetMaster failed" "${XORG_LOG}" 2>/dev/null; then
+        bashio::log.warning "Ein anderer Prozess belegt den Bildschirm. Läuft noch eine andere"
+        bashio::log.warning "Kiosk-App (z. B. 'HAOS Kiosk Display')? Diese bitte stoppen."
+    fi
+    if [[ "${DEBUG}" == "true" ]]; then
+        cat "${XORG_LOG}" 2>/dev/null || true
+    fi
+
+    kill "${XORG_PID}" 2>/dev/null || true
+    wait "${XORG_PID}" 2>/dev/null || true
+    XORG_PID=""
+    return 1
+}
+
+start_x_server() {
+    case "${VIDEO_DRIVER}" in
+        modesetting | fbdev)
+            start_xorg "${VIDEO_DRIVER}" \
+                || bashio::exit.nok "X-Server konnte nicht gestartet werden."
+            ;;
+        *)
+            if ! start_xorg modesetting; then
+                bashio::log.warning "Versuche den Ersatztreiber fbdev ..."
+                start_xorg fbdev \
+                    || bashio::exit.nok "X-Server konnte nicht gestartet werden."
+            fi
+            ;;
+    esac
+}
+
+# ------------------------------------------------------------------------------
+# Drehung + Touch-Ausrichtung
+# ------------------------------------------------------------------------------
+apply_rotation() {
+    local output
+    if [[ "${ROTATION}" == "normal" ]]; then
+        return 0
+    fi
+    output=$(xrandr --query 2>/dev/null | awk '/ connected/ {print $1; exit}' || true)
+    if [[ -n "${output}" ]] && xrandr --output "${output}" --rotate "${ROTATION}" 2>/dev/null; then
+        ROTATION_APPLIED=true
+        bashio::log.info "Bild gedreht: ${ROTATION} (${output})."
+    else
+        bashio::log.warning "Bild konnte nicht gedreht werden (vom Treiber nicht unterstützt, z. B. fbdev)."
+    fi
+}
+
+map_touch_inputs() {
+    local matrix id name found=0
+    matrix="1 0 0 0 1 0 0 0 1"
+    if [[ "${ROTATION_APPLIED}" == "true" ]]; then
+        case "${ROTATION}" in
+            left) matrix="0 -1 1 1 0 0 0 0 1" ;;
+            right) matrix="0 1 0 -1 0 1 0 0 1" ;;
+            inverted) matrix="-1 0 1 0 -1 1 0 0 1" ;;
+        esac
+    fi
+
+    while read -r id; do
+        [[ -n "${id}" ]] || continue
+        # Nur absolute Geräte (Touchscreens) haben eine Kalibriermatrix
+        if xinput list-props "${id}" 2>/dev/null | grep -q "libinput Calibration Matrix"; then
+            name=$(xinput list --name-only "${id}" 2>/dev/null || echo "Gerät ${id}")
+            # shellcheck disable=SC2086
+            xinput set-prop "${id}" "libinput Calibration Matrix" ${matrix} 2>/dev/null || true
+            bashio::log.info "Touch-Gerät aktiv: ${name}"
+            found=$((found + 1))
+        fi
+    done < <(xinput list --id-only 2>/dev/null || true)
+
+    if [[ "${found}" -eq 0 ]]; then
+        bashio::log.warning "Kein Touch-Gerät gefunden – ist der USB-Touch-Anschluss des Monitors verbunden?"
+    fi
+}
+
+screen_size() {
+    local size
+    size=$(xrandr --current 2>/dev/null \
+        | awk -F'current ' 'NR == 1 { split($2, a, ","); gsub(/ /, "", a[1]); print a[1] }' || true)
+    if [[ ! "${size}" =~ ^[0-9]+x[0-9]+$ ]]; then
+        size="1920x1080"
+    fi
+    echo "${size}"
+}
+
+# ------------------------------------------------------------------------------
+# Bildschirm-Manager (läuft dauerhaft, wird bei Absturz neu gestartet)
+# ------------------------------------------------------------------------------
+start_screen_manager() {
+    local args=(--timeout "${SCREEN_TIMEOUT}" --api-port "${API_PORT}")
+    if [[ "${SWALLOW_WAKE_TOUCH}" == "true" ]]; then
+        args+=(--swallow-wake-touch)
+    fi
+    (
+        while true; do
+            python3 -u "${SHARE_DIR}/screen_manager.py" "${args[@]}" || true
+            bashio::log.warning "Bildschirm-Manager beendet – Neustart in 3 s."
+            sleep 3
+        done
+    ) &
+    SCREEN_LOOP_PID=$!
+}
+
+# ------------------------------------------------------------------------------
+# Browser
+# ------------------------------------------------------------------------------
+dashboard_url() {
+    if [[ -n "${DASHBOARD}" ]]; then
+        echo "${HA_URL}/${DASHBOARD}"
+    else
+        echo "${HA_URL}/"
+    fi
+}
+
+wait_for_home_assistant() {
+    local i
+    for ((i = 0; i < 90; i++)); do
+        if curl -s -o /dev/null --max-time 3 "${HA_URL}/manifest.json"; then
+            return 0
+        fi
+        if [[ "${i}" -eq 0 ]]; then
+            bashio::log.info "Warte auf Home Assistant unter ${HA_URL} ..."
+        fi
+        sleep 2
+    done
+    bashio::log.warning "Home Assistant nicht erreichbar – Browser startet trotzdem."
+}
+
+build_autologin_extension() {
+    local scheme rest hostport host port origin config
+
+    rm -rf "${EXT_DIR}"
+    if [[ -z "${ACCESS_TOKEN}" ]]; then
+        return 1
+    fi
+
+    scheme=${HA_URL%%://*}
+    rest=${HA_URL#*://}
+    hostport=${rest%%/*}
+    host=${hostport%%:*}
+    port=""
+    if [[ "${hostport}" == *:* ]]; then
+        port=${hostport##*:}
+    fi
+    # Browser lassen Standard-Ports im Origin weg
+    if [[ ("${scheme}" == "http" && "${port}" == "80") || ("${scheme}" == "https" && "${port}" == "443") ]]; then
+        port=""
+    fi
+    origin="${scheme}://${host}${port:+:${port}}"
+
+    mkdir -p "${EXT_DIR}"
+    jq -n --arg match "${scheme}://${host}/*" '{
+        manifest_version: 3,
+        name: "Touch Kiosk Auto-Login",
+        version: "1.0",
+        description: "Meldet das Kiosk-Dashboard automatisch an.",
+        content_scripts: [{
+            matches: [$match],
+            js: ["autologin.js"],
+            run_at: "document_start",
+            all_frames: false
+        }]
+    }' > "${EXT_DIR}/manifest.json"
+
+    config=$(jq -cn --arg origin "${origin}" --arg token "${ACCESS_TOKEN}" \
+        '{origin: $origin, token: $token}')
+    {
+        cat "${SHARE_DIR}/autologin.js"
+        printf '\ntouchKioskAutoLogin(%s);\n' "${config}"
+    } > "${EXT_DIR}/autologin.js"
+}
+
+build_chromium_args() {
+    local size width height scale win_w win_h
+    size=$(screen_size)
+    width=${size%x*}
+    height=${size#*x}
+    scale=$(awk -v z="${ZOOM}" 'BEGIN { printf "%.2f", z / 100 }')
+    # Chromium misst die Fenstergröße in skalierten Pixeln -> durch den Zoom teilen
+    win_w=$(( (width * 100 + ZOOM - 1) / ZOOM ))
+    win_h=$(( (height * 100 + ZOOM - 1) / ZOOM ))
+
+    # shellcheck disable=SC2054 # Kommas gehören zu den Chromium-Parametern
+    CHROMIUM_ARGS=(
+        --kiosk
+        --no-sandbox
+        --test-type
+        --user-data-dir="${PROFILE_DIR}"
+        --ozone-platform=x11
+        --window-position=0,0
+        --window-size="${win_w},${win_h}"
+        --force-device-scale-factor="${scale}"
+        --disable-gpu
+        --disable-dev-shm-usage
+        --touch-events=enabled
+        --overscroll-history-navigation=0
+        --disable-pinch
+        --no-first-run
+        --noerrdialogs
+        --disable-session-crashed-bubble
+        --hide-crash-restore-bubble
+        --disable-component-update
+        --check-for-update-interval=31536000
+        --password-store=basic
+        --autoplay-policy=no-user-gesture-required
+        --disable-features=Translate,TranslateUI,DisableLoadExtensionCommandLineSwitch
+        --lang=de-DE
+    )
+
+    if build_autologin_extension; then
+        CHROMIUM_ARGS+=(--load-extension="${EXT_DIR}")
+        bashio::log.info "Automatische Anmeldung mit Zugriffstoken aktiv."
+    else
+        bashio::log.info "Kein Zugriffstoken gesetzt – beim ersten Start einmal am Monitor anmelden"
+        bashio::log.info "('Angemeldet bleiben' aktivieren); die Anmeldung wird gespeichert."
+    fi
+    bashio::log.info "Bildschirm: ${width}x${height}, Zoom ${ZOOM} %."
+}
+
+prepare_profile() {
+    local prefs="${PROFILE_DIR}/Default/Preferences"
+    mkdir -p "${PROFILE_DIR}"
+    # Sperrdateien eines unsauber beendeten Chromium entfernen
+    rm -f "${PROFILE_DIR}"/Singleton* 2>/dev/null || true
+    # "Chromium wurde nicht richtig beendet"-Hinweis unterdrücken
+    if [[ -f "${prefs}" ]]; then
+        sed -i \
+            -e 's/"exited_cleanly":false/"exited_cleanly":true/' \
+            -e 's/"exit_type":"[^"]*"/"exit_type":"Normal"/' \
+            "${prefs}" 2>/dev/null || true
+    fi
+}
+
+run_browser() {
+    local url
+    url=$(dashboard_url)
+    while true; do
+        prepare_profile
+        bashio::log.info "Starte Chromium: ${url}"
+        if [[ "${DEBUG}" == "true" ]]; then
+            chromium "${CHROMIUM_ARGS[@]}" "${url}" &
+        else
+            chromium "${CHROMIUM_ARGS[@]}" "${url}" >>"${CHROMIUM_LOG}" 2>&1 &
+        fi
+        CHROMIUM_PID=$!
+        wait "${CHROMIUM_PID}" || true
+        CHROMIUM_PID=""
+
+        if [[ -z "${XORG_PID}" ]] || ! kill -0 "${XORG_PID}" 2>/dev/null; then
+            bashio::exit.nok "X-Server wurde beendet."
+        fi
+        bashio::log.warning "Chromium wurde beendet – Neustart in 5 s."
+        sleep 5
+    done
+}
+
+# ------------------------------------------------------------------------------
+main() {
+    trap cleanup EXIT
+    trap 'exit 0' TERM INT
+
+    read_options
+    bashio::log.info "Touch Kiosk startet (Gerät: $(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' || uname -m))"
+
+    prepare_tty0
+    start_udev
+    log_input_devices
+    select_display
+    start_x_server
+    restore_tty0
+
+    xset s off 2>/dev/null || true
+    apply_rotation
+    map_touch_inputs
+
+    start_screen_manager
+    wait_for_home_assistant
+    build_chromium_args
+    run_browser
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

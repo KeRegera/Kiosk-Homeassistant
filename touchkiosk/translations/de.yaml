@@ -1,0 +1,49 @@
+---
+configuration:
+  ha_url:
+    name: Home-Assistant-Adresse
+    description: >-
+      Adresse, unter der der Kiosk Home Assistant öffnet. Normalerweise
+      http://localhost:8123 (nur https verwenden, wenn SSL in Home Assistant
+      selbst eingerichtet ist).
+  dashboard:
+    name: Dashboard
+    description: >-
+      Pfad des Dashboards, z. B. "lovelace/0" oder "dashboard-kiosk/start".
+      Leer lassen für das Standard-Dashboard.
+  access_token:
+    name: Langlebiges Zugriffstoken
+    description: >-
+      Für die automatische Anmeldung. Erstellen unter Profil → Sicherheit →
+      Langlebige Zugriffstoken (am besten mit einem eigenen Kiosk-Benutzer).
+      Ohne Token einmal am Monitor anmelden.
+  screen_timeout:
+    name: Standby nach (Sekunden)
+    description: >-
+      Nach so vielen Sekunden ohne Berührung geht der Monitor in den Standby.
+      180 = 3 Minuten, 0 = nie.
+  swallow_wake_touch:
+    name: Aufweck-Berührung ignorieren
+    description: >-
+      Die Berührung, die den Monitor aufweckt, löst nichts im Dashboard aus.
+  rotation:
+    name: Drehung
+    description: Bild und Touch drehen (normal, left, right, inverted).
+  zoom:
+    name: Zoom (%)
+    description: Vergrößerung des Dashboards in Prozent.
+  hide_cursor:
+    name: Mauszeiger ausblenden
+    description: Blendet den Mauszeiger komplett aus (für reine Touch-Bedienung).
+  video_driver:
+    name: Grafiktreiber
+    description: >-
+      auto probiert modesetting und fällt bei Problemen auf fbdev zurück.
+  api_port:
+    name: API-Port
+    description: >-
+      Port der lokalen Steuerung (nur 127.0.0.1) für Home Assistant,
+      z. B. /screen/on. 0 = aus.
+  debug:
+    name: Fehlersuche
+    description: Schreibt ausführliche Xorg- und Chromium-Meldungen ins Log.

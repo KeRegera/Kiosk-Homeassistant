@@ -1,0 +1,41 @@
+---
+configuration:
+  ha_url:
+    name: Home Assistant URL
+    description: >-
+      URL the kiosk opens. Usually http://localhost:8123 (use https only if
+      SSL is configured in Home Assistant itself).
+  dashboard:
+    name: Dashboard
+    description: >-
+      Dashboard path, e.g. "lovelace/0". Leave empty for the default dashboard.
+  access_token:
+    name: Long-lived access token
+    description: >-
+      Used for automatic login. Create it under Profile → Security →
+      Long-lived access tokens. Without a token, log in once on the screen.
+  screen_timeout:
+    name: Standby after (seconds)
+    description: Seconds without touch before the monitor goes to standby. 0 = never.
+  swallow_wake_touch:
+    name: Ignore wake-up touch
+    description: The touch that wakes the monitor does not trigger the dashboard.
+  rotation:
+    name: Rotation
+    description: Rotate screen and touch input (normal, left, right, inverted).
+  zoom:
+    name: Zoom (%)
+    description: Dashboard zoom level in percent.
+  hide_cursor:
+    name: Hide mouse cursor
+    description: Hides the mouse cursor completely (touch-only use).
+  video_driver:
+    name: Video driver
+    description: auto tries modesetting and falls back to fbdev.
+  api_port:
+    name: API port
+    description: >-
+      Port of the local control API (127.0.0.1 only), e.g. /screen/on. 0 = off.
+  debug:
+    name: Debug
+    description: Write verbose Xorg and Chromium output to the log.
